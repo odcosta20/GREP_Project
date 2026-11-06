@@ -1,0 +1,8 @@
+participant_id,condition,action,note
+TED085,Warm_Alc,confirmed,"2nd bottle on trace; minimal sip (~15 g), not on run sheet"
+TED133,Hot_Alc,confirmed,"3rd bottle on trace; minimal sip (~40 g), not on run sheet"
+TED184,Warm_Alc,confirmed,"3rd bottle on trace; minimal sip (~41 g), not on run sheet"
+TED019,Warm_Topo,confirmed,"2nd bottle on trace; ~85 g drunk, not on run sheet, definitely looks like a second bottle"
+TED095,Hot_Alc,corrected,one bottle (687 -> 329 g = 358 g); hand-on-bottle plateau at ~590 g caused false split
+TED130,Warm_Alc,excluded,scale recorded only zeros; no weight data
+TED006,Hot_Topo,excluded,incomplete session; no file

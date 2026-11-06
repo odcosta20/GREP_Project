@@ -1,0 +1,1270 @@
+---
+title: "GREP_Markdown"
+author: "Olivia"
+date: "2026-10-13"
+output: html_document
+---
+Loading my Libraries
+```{r setup, include=FALSE}
+library(readr)
+library(readxl)
+library(dplyr)
+library(purrr)
+library(stringr)
+library(tidyr)
+library(lmerTest)
+library(lme4)
+library(ggplot2)
+library(emmeans)
+library(gtsummary)
+library(webshot2)
+library(Hmisc)
+library(tidyverse)
+library(broom.mixed)
+```
+
+Grabbing Pain Intensity Data From INTACT VR folder
+```{r}
+#Setting everything up
+root        <- "/Volumes/Dept-Anes-MAPL/TED Data/INTACT VR Data"
+pain_rating <- "Pain_Int.*Submitted"   # event label for a submitted pain rating
+
+keep_ids <- c("TED004", "TED006", "TED007", "TED015", "TED017", "TED018",
+              "TED019", "TED029", "TED033", "TED038", "TED044", "TED056",
+              "TED057", "TED069", "TED077", "TED084", "TED085", "TED086",
+              "TED087", "TED088", "TED093", "TED095", "TED119", "TED129", 
+              "TED130", "TED131", "TED133", "TED144", "TED181", "TED184")
+
+conditions <- c("Hot_Alc", "Hot_Topo", "Warm_Alc", "Warm_Topo")
+
+#Setting TED006 aside because they had 3 sessions
+expected_incomplete <- c("TED006")
+
+#This cleans up excess files
+skip_pattern <- "Repeated|Failed|Attempt|copy"
+
+#Creating a function to pull Hot/Warm + Alc/Topo out of the file/folder name
+get_cond <- function(x) {
+  temp <- str_extract(x, regex("Hot|Warm", ignore_case = TRUE))
+  subst <- str_extract(x, regex("Alc|Topo", ignore_case = TRUE))
+  ifelse(is.na(temp) | is.na(subst), NA_character_,
+         paste(str_to_title(temp), str_to_title(subst), sep = "_"))
+}
+
+#Creating a function to read one CSV file at a time. 
+read_one <- function(f) {
+  id <- coalesce(str_extract(basename(f), regex("TED\\s*\\d+", ignore_case = TRUE)),
+                 str_extract(dirname(f),  regex("TED\\s*\\d+", ignore_case = TRUE)))
+  id <- toupper(str_remove_all(id, "\\s"))
+  cond_folder <- get_cond(str_remove(dirname(f), fixed(root)))
+  cond_file <- get_cond(basename(f))
+  cond <- coalesce(cond_folder, cond_file)
+  df <- tryCatch(
+    read_csv(f, col_types = cols(.default = col_character()),
+             name_repair = "minimal", show_col_types = FALSE, progress = FALSE),
+    error = function(e) { warning("Could not read: ", f); NULL }
+  )
+  if (is.null(df)) return(NULL)
+  hit <- Reduce(`|`, lapply(df, function(x)
+    str_detect(coalesce(x, ""), regex(pain_rating, ignore_case = TRUE))))
+  rows <- df[hit, , drop = FALSE]
+  if (nrow(rows) == 0) { warning("No pain ratings in: ", f); return(NULL) }
+  nm <- names(rows)
+  get <- function(n) if (n %in% nm) rows[[which(nm == n)[1]]] else NA_character_
+  tibble(
+    participant_id = id,
+    condition = cond,
+    cond_folder = cond_folder,   # kept for checking; dropped before saving
+    cond_file = cond_file,
+    sim_seconds = suppressWarnings(as.numeric(get("Participant Seconds in Simulation"))),
+    pain_rating = suppressWarnings(as.numeric(get("Event Data"))),
+    source_file = basename(f),
+    source_path = f
+  )
+}
+
+#Looking at the MainLog files specifically
+ted <- list.dirs(root, recursive = FALSE)
+ted <- ted[toupper(str_remove_all(basename(ted), "\\s")) %in% keep_ids]
+length(ted)                          # should be 26
+
+files <- unlist(lapply(ted, list.files, pattern = "MainLog.*\\.csv$",
+                       recursive = TRUE, full.names = TRUE, ignore.case = TRUE))
+files <- files[!str_detect(files, regex(skip_pattern, ignore_case = TRUE))]
+length(files)                        # about 119 (30 x 4, minus TED006's missing one)
+
+#Reading everything. RIP. Yaaayyyyy
+pain_data <- map(files, read_one) |>
+  list_rbind() |>
+  arrange(participant_id, condition, sim_seconds)
+
+#Sanity Checkes 
+#1 Anyone missing entirely? (Should have 30); setdiff should return empty
+n_distinct(pain_data$participant_id)              
+setdiff(keep_ids, pain_data$participant_id)
+
+#2 Condition couldn't be figured out
+pain_data |> filter(is.na(condition)) |> distinct(participant_id, source_path)
+
+#3 Folder and file name disagree about the condition (folder wins; verify these)
+pain_data |>
+  filter(!is.na(cond_folder), !is.na(cond_file), cond_folder != cond_file) |>
+  distinct(participant_id, cond_folder, cond_file, source_path)
+
+#4 Checks if there is more than one file per session
+pain_data |>
+  distinct(participant_id, condition, source_path) |>
+  group_by(participant_id, condition) |>
+  filter(n() > 1) |>
+  arrange(participant_id, condition)
+
+#5 If anyone (besides TED006 is missing a session)
+check <- pain_data |> count(participant_id, condition)
+expand.grid(participant_id = keep_ids, condition = conditions) |>
+  anti_join(check, by = c("participant_id", "condition")) |>
+  filter(!participant_id %in% expected_incomplete)
+
+#6 Ratings per session (expect ~30 each)
+print(check, n = Inf)
+
+#Making Pain Data be on a 0-100 scale for readability purposes
+pain_data <- pain_data |> mutate(pain_rating = pain_rating * 100)
+
+#Thank god we save 
+pain_data |>
+  select(participant_id, condition, sim_seconds, pain_rating, source_file) |>
+  write_csv("pain_ratings_compiled.csv")
+```
+
+Grabbing Bottle Weight Data and Praying
+```{r}
+#Starting out
+root <- "/Volumes/Dept-Anes-MAPL/TED Data/INTACT VR Data"
+
+# Paste the same keep_ids vector from extract_pain_ratings.R
+keep_ids <- c("TED004", "TED006", "TED007", "TED015", "TED017", "TED018",
+              "TED019", "TED029", "TED033", "TED038", "TED044", "TED056",
+              "TED057", "TED069", "TED077", "TED084", "TED085", "TED086",
+              "TED087", "TED088", "TED093", "TED095", "TED119", "TED129", 
+              "TED130", "TED131", "TED133", "TED144", "TED181", "TED184")
+
+skip_pattern <- "Repeated|Failed|copy"
+
+#Sessions with no usable weight data (fill in the real IDs/conditions)
+excluded_sessions <- tribble(
+  ~participant_id, ~condition,  ~reason,
+  "TED130",        "Warm_Alc",   "no weight data",
+  "TED006",        "Hot_Topo", "incomplete session"
+)
+
+#Tuning knobs -- check these against a few QC plots before trusting the totals
+min_weight    <- 100 # readings at or below this = bottle off scale / glitch (drops 0s and negatives)
+max_weight    <- 850 # cap: readings above this = press-down spike or scale glitch.
+#Full bottles run ~750-850 g. Check the heaviest ALC bottle (kept comfortably above)
+seg_tol       <- 5 # change (g) between readings that starts a new plateau (scale noise)
+min_plateau_s <- 10 #a weight must be held this many seconds to count as real
+jump_g        <- 150 #a PLATEAU rising by more than this = a new bottle was placed
+
+#Look for the files
+files <- map(keep_ids, ~ list.files(file.path(root, .x),
+                                    pattern = "MainLog.*\\.csv$",
+                                    recursive = TRUE, full.names = TRUE,
+                                    ignore.case = TRUE)) |>
+  unlist()
+
+files <- files[!str_detect(files, skip_pattern)]
+#Check file length
+length(files)
+
+#Sorting based off the folder name in the S Drive
+get_temp <- function(x) {
+  case_when(str_detect(x, regex("hot",  ignore_case = TRUE)) ~ "Hot",
+            str_detect(x, regex("warm", ignore_case = TRUE)) ~ "Warm",
+            TRUE ~ NA_character_)
+}
+get_sub <- function(x) {
+  case_when(str_detect(x, regex("topo|non.?alc", ignore_case = TRUE)) ~ "Topo",
+            str_detect(x, regex("alc",           ignore_case = TRUE)) ~ "Alc",
+            TRUE ~ NA_character_)
+}
+
+file_info <- tibble(file = files) |>
+  mutate(
+    rel            = str_remove(file, fixed(paste0(root, "/"))),
+    participant_id = str_extract(rel, "TED\\d{3}"),
+    folder         = dirname(rel),
+    fname          = basename(rel),
+    temp           = coalesce(get_temp(folder), get_temp(fname)),
+    substance      = coalesce(get_sub(folder),  get_sub(fname)),
+    condition      = paste(temp, substance, sep = "_")
+  )
+
+#Read one of the files weight data's first to see if the above works. 
+read_weights <- function(path) {
+  df <- read_csv(path, show_col_types = FALSE,
+                 col_types = cols(.default = col_character()),
+                 name_repair = "unique_quiet")
+
+  t_col <- names(df)[str_detect(names(df), "^Participant Seconds in Simulation")][1]
+  w_col <- names(df)[str_detect(names(df), "^Raw Scale Weight")][1]
+
+  if (is.na(t_col) || is.na(w_col)) {
+    warning("Missing time or weight column in: ", path)
+    return(tibble(t = numeric(), w = numeric()))
+  }
+
+  tibble(
+    t = suppressWarnings(as.numeric(df[[t_col]])),
+    w = suppressWarnings(as.numeric(df[[w_col]]))
+  )
+}
+
+names(read_csv(file_info$file[2], n_max = 1, show_col_types = FALSE))
+
+#Creating a data frame that doesn't depend on me pulling from the S Drive everytime I screw up. 
+safe_read <- possibly(read_weights,
+                      otherwise = tibble(t = numeric(), w = numeric()))
+
+raw_data <- file_info |>
+  mutate(raw = map(file, safe_read))
+
+saveRDS(raw_data, "raw_weights.rds")
+
+#Sanity check those two files
+df2 <- read_csv(file_info$file[2], show_col_types = FALSE, name_repair = "unique_quiet")
+summary(as.numeric(df2[[5]]))
+summary(as.numeric(df2[[8]]))
+
+#Split into bottles and estimated consumption
+#    - cap: drop readings <= 0 (lifted / glitch) and > max_weight (spikes)
+#    - group consecutive readings into plateaus; keep only plateaus held
+#      for min_plateau_s seconds (brief spikes and partial lifts drop out)
+#    - plateau weight = duration-weighted mean
+#    - a plateau rising by more than jump_g = a new bottle
+#    - per bottle: start = first plateau, end = last plateau
+
+empty_result <- function() {
+  tibble(bottle = NA_integer_, start_weight = NA_real_, end_weight = NA_real_,
+         n_plateaus = 0L, consumed_g = NA_real_)
+}
+
+get_plateaus <- function(dat) {
+  dat |>
+    filter(!is.na(t), !is.na(w)) |>
+    arrange(t) |>
+    mutate(dur = lead(t, default = last(t)) - t) |>     # how long each reading lasted
+    filter(w > min_weight, w < max_weight) |>
+    mutate(seg = cumsum(abs(w - lag(w, default = first(w))) > seg_tol)) |>
+    group_by(seg) |>
+    summarise(
+      start_t = first(t),
+      weight  = weighted.mean(w, pmax(dur, 1e-6)),
+      seconds = sum(dur),
+      .groups = "drop"
+    ) |>
+    filter(seconds >= min_plateau_s)
+}
+
+
+bottle_consumption <- function(dat) {
+  plateaus <- get_plateaus(dat)
+  if (nrow(plateaus) == 0) return(empty_result())
+
+  plateaus |>
+    filter(!(coalesce(lag(weight) - weight > jump_g, FALSE) & coalesce(lead(weight) - weight > jump_g, FALSE))) |>
+    mutate(bottle = cumsum((weight - lag(weight, default = first(weight))) > jump_g) + 1L) |>
+    group_by(bottle) |>
+    summarise(
+      start_weight = first(weight),
+      end_weight   = last(weight),
+      n_plateaus   = n(),
+      .groups = "drop"
+    ) |>
+    mutate(consumed_g = start_weight - end_weight)
+}
+
+#Testing on one of each weird file first (and a normal file)
+test_dat <- read_weights(file_info$file[file_info$participant_id == "TED093" & file_info$condition == "Hot_Topo"])
+get_plateaus(test_dat)          #Looks like the QC graphs
+bottle_consumption(test_dat)    #Check bottle count
+
+# Plot raw weight with detected plateaus on top (red) to check the fit:
+ggplot(filter(test_dat, w > min_weight, w < max_weight), aes(t, w)) +
+   geom_line(color = "grey60") +
+   geom_point(data = get_plateaus(test_dat), aes(start_t, weight), color = "red", size = 2) +
+   theme_classic()
+
+file_info[1, c("participant_id", "condition")]
+bottle_consumption(test_dat)
+#Checked TED004 Hot_Alc for a normal run
+#Checked TED093 to see how the negative values came out (they did not yay)
+#Checked TED044 to see how it handles overly high values (it went well)
+
+#Do the above but for every file. IT WORKED OMG.
+bottles <- file_info |>
+  mutate(result = map(file, ~ bottle_consumption(read_weights(.x)))) |>
+  select(participant_id, condition, file, result) |>
+  unnest(result)
+
+#TED072 not doing its job, had to rerun keep_ids 
+#file.exists(file_info$file[72])
+#list.files(file.path(root, "TED087"), recursive = TRUE)
+
+session_weights <- bottles |>
+  group_by(participant_id, condition) |>
+  summarise(
+    n_bottles_detected = sum(!is.na(bottle)),
+    total_consumed_g   = sum(consumed_g),
+    first_start_weight = first(start_weight),
+    .groups = "drop"
+  ) |>
+  left_join(excluded_sessions, by = c("participant_id", "condition")) |>
+  mutate(total_consumed_g = if_else(!is.na(reason), NA_real_, total_consumed_g))
+
+#Sanity checks to make sure everything did what it was supposed to do. 
+file_info |> filter(is.na(temp) | is.na(substance)) #all good
+
+file_info |> count(participant_id, condition) |> filter(n > 1) #no repeats
+
+session_weights |> count(participant_id) |> filter(n < 4) #only participant TED006 missing a session so all good there. 
+
+# 7d. Implausible bottle start weights (far from the typical full bottle)
+bottles |>
+  mutate(start_z = (start_weight - mean(start_weight, na.rm = TRUE)) /
+                     sd(start_weight, na.rm = TRUE)) |>
+  filter(abs(start_z) > 2 | consumed_g < 0) |>
+  select(participant_id, condition, bottle, start_weight, end_weight, consumed_g, start_z) #some weirdness rerun in a bit. 
+
+min(full_data$Quantity_Drunk, na.rm = TRUE)
+
+# 7e. Detected bottles vs. hand-recorded Quantity_Drunk
+#     (big mismatches = sessions to look at on the plot)
+bottle_check <- session_weights |>
+  left_join(
+    full_data |>
+      filter(condition != "screening_session") |>
+      mutate(condition = as.character(condition)) |>
+      select(participant_id, condition, Quantity_Drunk),
+    by = c("participant_id", "condition")
+  ) |>
+  mutate(
+    bottles_used = ceiling(Quantity_Drunk),
+    bottle_diff = n_bottles_detected - bottles_used,
+    match = bottle_diff ==0)
+
+bottle_check |> count(match)
+
+table(run_sheet = 
+        bottle_check$bottles_used, detected = 
+        bottle_check$n_bottles_detected)
+
+bottle_check |>
+  filter(!match) |>
+  select(participant_id, condition, Quantity_Drunk, bottles_used, n_bottles_detected, bottle_diff)
+
+#Running checks on the 13 weird ones
+ #participant_id condition Quantity_Drunk bottles_used n_bottles_detected bottle_diff
+   #<chr>          <chr>              <dbl>        <dbl>              <int>       <dbl>
+ #1 TED007         Warm_Topo           2               2                  3           1 Fixed 
+ #2 TED015         Hot_Alc             2               2                  3           1 Fixed itself
+ #3 TED015         Warm_Topo           1               1                  2           1 Fixed itself
+ #4 TED017         Warm_Topo           1.5             2                  3           1 Fixed itself
+ #5 TED019         Warm_Topo           1               1                  2           1 #there are no times in the run sheet, but this is DEFINITELY 2 bottles. 
+ #6 TED057         Warm_Alc            1.75            2                  3           1 Fixed itself
+ #7 TED085         Warm_Alc            1               1                  2           1 This is actually 2 bottles, run sheet said 1. They likely got another one and made one sip before the session ended. All good
+ #8 TED095         Hot_Alc             1               1                  2           1 Needed a manual fix. 
+ #9 TED130         Warm_Alc            1               1                  0          -1 Never had scale weight, ignore
+#10 TED131         Hot_Alc             1               1                  2           1 Fixed itself
+#11 TED133         Hot_Alc             2               2                  4           2 DId get 3 bottles only 2 written in run sheet, but there are 3 bottle time stamps in the run sheet. 
+#12 TED181         Hot_Alc             0.75            1                  2           1 Fixed itself
+#13 TED184         Warm_Alc            2               2                  3           1 Did get 3 bottles, only 2 written in run sheet. But there are 3 times stamps. 
+test_dat <- read_weights(file_info$file[file_info$participant_id == "TED095" & file_info$condition == "Hot_Alc"])
+get_plateaus(test_dat)          #Looks like the QC graphs
+bottle_consumption(test_dat)    #Check bottle count
+
+# Plot raw weight with detected plateaus on top (red) to check the fit:
+test_plot <- ggplot(filter(test_dat, w > min_weight, w < max_weight), aes(t, w)) +
+   geom_line(color = "grey60") +
+   geom_point(data = get_plateaus(test_dat), aes(start_t, weight), color = "red", size = 2) +
+   theme_classic()
+print(test_plot)
+
+
+file_info[1, c("participant_id", "condition")]
+bottle_consumption(test_dat)
+
+nrow(test_dat)
+#Fixing the weirdos
+bottles |>
+  filter(paste(participant_id, condition) %in%
+           c("TED019 Warm_Topo",
+             "TED085 Warm_Alc",
+             "TED095 Hot_Alc",
+             "TED133 Hot_Alc",
+             "TED184 Warm_Alc")) |>
+  select(participant_id, condition, bottle, start_weight, end_weight, n_plateaus, consumed_g)
+
+#Manually fixes
+manual_fixes <- tribble(
+  ~participant_id, ~condition, ~fixed_consumed_g, ~note, 
+  "TED095", "Hot_Alc", 358, "one bottle (687 - 329 g); hand-on-bottle plateau at ~590 g caused false split"
+)
+session_weights <- session_weights |>
+  left_join(manual_fixes |>
+              select(-note), by = c("participant_id", "condition")) |>
+  mutate(total_consumed_g =
+           coalesce(fixed_consumed_g,
+                    total_consumed_g)) |>
+  select(-fixed_consumed_g)
+
+plot_session <- function(id, cond) {
+  dat <- raw_data$raw[[which(raw_data$participant_id == id & raw_data$condition == cond)]]
+  print(bottle_consumption(dat))
+  p <- ggplot(filter(dat, w > min_weight, w < max_weight), aes(t, w)) +
+    geom_line(color = "grey60") +
+    geom_point(data = get_plateaus(dat), aes(start_t, weight), color = "red", size = 2) +
+    labs(title = paste(id, cond)) +
+    theme_classic()
+  print(p)
+}
+
+plot_session("TED019", "Warm_Topo")
+plot_session("TED133", "Hot_Alc")
+plot_session("TED184", "Warm_Alc")
+plot_session("TED095", "Hot_Alc")
+#Quality check log
+qc_log <- tribble(
+  ~participant_id, ~condition,  ~action,     ~note,
+  "TED085",        "Warm_Alc",  "confirmed", "2nd bottle on trace; minimal sip (~15 g), not on run sheet",
+  "TED133",        "Hot_Alc",   "confirmed", "3rd bottle on trace; minimal sip (~40 g), not on run sheet",
+  "TED184",        "Warm_Alc",  "confirmed", "3rd bottle on trace; minimal sip (~41 g), not on run sheet",
+  "TED019",        "Warm_Topo", "confirmed", "2nd bottle on trace; ~85 g drunk, not on run sheet, definitely looks like a second bottle",
+  "TED095",        "Hot_Alc",   "corrected", "one bottle (687 -> 329 g = 358 g); hand-on-bottle plateau at ~590 g caused false split",
+  "TED130",        "Warm_Alc",  "excluded",  "scale recorded only zeros; no weight data",
+  "TED006",        "Hot_Topo",  "excluded",  "incomplete session; no file"
+)
+
+write_csv(qc_log, "bottle_weights_qc_log.csv")
+
+#Saving my data
+write_csv(bottles,"bottle_weights_by_bottle.csv")
+write_csv(session_weights, "bottle_weights_by_session.csv")
+
+#Sanity check
+session_weights |> filter(participant_id == "TED095", condition == "Hot_Alc")
+session_weights <- session_weights |>
+  mutate(n_bottles_detected = if_else(participant_id == "TED095" & condition == "Hot_Alc", 1L, n_bottles_detected))
+session_weights |> filter(participant_id == "TED095", condition == "Hot_Alc") #yay
+
+#Final Final FInal Sanity Check
+nrow(session_weights) #119
+summary(session_weights$total_consumed_g) #good
+session_weights |>
+  filter(is.na(total_consumed_g)) #good just TED130
+session_weights |>
+  filter(total_consumed_g < 0) #nada we good
+session_weights |> filter(participant_id == "TED095", condition == "Hot_Alc") #358 woohoo!
+
+#saving
+write_csv(session_weights, "bottle_weights_by_session.csv")
+write_csv(bottles, "bottle_weights_by_bottle.csv")
+write_csv(qc_log, "bottle_weights_qc_log.csv")
+
+#MERGING TIME
+full_data <- full_data |>
+  mutate(condition_chr = as.character(condition)) |>
+  left_join(session_weights |> select(participant_id, condition, total_consumed_g),
+            by = c("participant_id", "condition_chr" = "condition")) |>
+  select(-condition_chr)
+```
+
+Separating the Pain Averages
+```{r}
+Pain_Avg <- pain_data |>
+  group_by(participant_id, condition) |>
+  summarise(
+    pain_mean = mean(pain_rating, na.rm = TRUE),
+    n_ratings = sum(!is.na(pain_rating)),
+    .groups = "drop"
+  ) |>
+  mutate(
+    temp      = str_extract(condition, "Hot|Warm"),
+    substance = str_extract(condition, "Alc|Topo")
+  ) |>
+  relocate(participant_id, condition, temp, substance) |>
+  arrange(participant_id, condition)
+
+# Checks
+nrow(Pain_Avg)                                          # 119
+Pain_Avg |> count(participant_id) |> filter(n != 4)     # only TED006
+print(Pain_Avg, n = Inf)
+
+write_csv(Pain_Avg, "Pain_Avg.csv")
+```
+
+GREP, EAA,  Data Cleaning, Heat Calibration from Screening, Self Medication VAS
+```{r}
+self_reports <- read_csv("EffectOfPainOnDTInTM_DATA_2026-10-13_1734.csv")
+
+self_reports <- self_reports |> filter(`study_id` %in% keep_ids)
+pain_data    <- pain_data    |> filter(participant_id   %in% keep_ids)
+
+#Sanity Checks
+length(keep_ids) #30
+n_distinct(self_reports$`study_id`)#30
+n_distinct(pain_data$participant_id)#30
+setdiff(keep_ids, self_reports$`study_id`)#nothing missing from redcap
+setdiff(keep_ids, pain_data$participant_id)#they match. hell yeah
+
+self_reports$condition <- "screening_session"
+
+#adding a temps column
+temps <- 38:44
+
+self_reports <- self_reports |>
+  rowwise() |>
+  mutate(heat_temp = {
+    r <- c_across(heat_pain_calibration_1:heat_pain_calibration_7)
+    if (all(is.na(r))) NA_real_
+    else temps[max(which(r == max(r, na.rm = TRUE)))]
+  }) |>
+  ungroup()
+
+#renaming things for sanity sake
+self_reports <- self_reports %>%
+  rename(
+    participant_id = study_id,
+    grep_woman_you = grep_1,
+    grep_man_you = grep_2,
+    grep_man_v_woman = grep_3,
+    grep_woman_v_man = grep_4,
+    drink_alc_ease_pain = eaa_1,
+    selfmed_vas = assessing_past_3_month_fre
+  )
+
+self_reports <- self_reports %>%
+  rename(
+    will_man_you = grep9,
+    will_woman_you = grep10,
+    will_woman_v_man = grep11,
+    will_man_v_woman = grep12,
+  )
+
+write_csv(self_reports, "cleaned_self_reports.csv")
+```
+
+Cleaning Demographics
+```{r}
+demographics <- read_csv("demographics.csv")
+
+demographics <- demographics |> filter(`participant_id` %in% keep_ids)
+
+#Sanity Checks
+n_distinct(demographics$`participant_id`)#30
+setdiff(keep_ids, demographics$`participant_id`) #nothing missing
+
+#Cleaning up the Raw Data and Adding Labels for my own sanity
+demographics <- demographics %>%
+  mutate(
+    sex_at_birth = case_when(
+      sex_at_birth == 1 ~ "male",
+      sex_at_birth == 2 ~ "female",
+      TRUE ~ as.character(sex_at_birth)
+      ),
+    race = case_when(
+      race == 1 ~ "White",
+      race == 2 ~ "Black or African American",
+      race == 4 ~ "Asian",
+      race == 5 ~ "American Indian/Alaskan Native",
+      race == 6 ~ "Another race or multiple races",
+      TRUE ~ as.character(race)
+      ),
+    ethnic_cat = case_when(
+      ethnic_cat == 1 ~ "Hispanic or Latino",
+      ethnic_cat == 2 ~ "Not Hispanic or Latino",
+      TRUE ~ as.character(ethnic_cat)
+      ),
+    gender = case_when(
+      gender == 1 ~ "Cis-gender Man",
+      gender == 2 ~ "Cis-gender Woman",
+      gender == 4 ~ "Transgender Woman",
+      gender == 5 ~ "Genderfluid",
+      gender == 7 ~ "Nonbinary",
+      gender == 8 ~ "Another identity or prefer to self-describe",
+      TRUE ~ as.character(gender)
+      ),
+    current_employed = case_when(
+      current_employed == 0 ~ "No",
+      current_employed == 1 ~ "Yes",
+      TRUE ~ as.character(current_employed)
+      ))
+
+demographics$condition <- "screening_session"
+
+#Will need to manually add the people who did demographics during econsent. 
+manual_demographics <- tibble(
+  participant_id = c("TED181", "TED184"),
+  sex_at_birth = c("male", "male"),
+  gender = c("Cis-gender Man", "Cis-gender Man"),
+  age = c(33, 63),
+  race = c("White", "White"),
+  ethnic_cat = c("Not Hispanic or Latino", "Not Hispanic or Latino"),
+  current_employed = c("Yes", "No"),
+  years_of_education = c(16, 14)
+)
+demographics <- rows_patch(demographics, manual_demographics, by = "participant_id")
+write_csv(demographics, "cleaned_demographics.csv")
+```
+
+Loading in Beverage drunk during session Data. 
+```{r}
+amount_consumed <- read_csv("Quantity_Drunk.csv")
+```
+
+Loading and Cleaning the Myalgia data from the TMD exam
+```{r}
+myalgia_dat <- read_csv("redcap_myalgia.csv")
+
+myalgia_dat <- myalgia_dat |> filter(`study_id` %in% keep_ids)
+
+#Sanity Checks
+n_distinct(myalgia_dat$`study_id`)#26
+setdiff(keep_ids, myalgia_dat$`study_id`) #nothing missing
+
+myalgia_dat <- myalgia_dat %>%
+  mutate(
+    f2_myalgia_calc = case_when(
+      f2_myalgia_calc == 0 ~ "control",
+      f2_myalgia_calc == 1 ~ "TMD",
+      TRUE ~ as.character(f2_myalgia_calc)
+  ))
+
+myalgia_dat <- myalgia_dat %>%
+  rename(
+    participant_id = study_id,
+    group = f2_myalgia_calc,
+  )
+
+#Updating TED069 from Control to TMD
+myalgia_dat <- myalgia_dat |>
+  mutate(group = if_else(participant_id == "TED069", "TMD", group))
+myalgia_dat |> filter(participant_id == "TED069")
+```
+
+Loading in AUDIT
+```{r}
+audit <- read_csv("audit_raw.csv")
+
+audit <- audit |> filter(`study_id` %in% keep_ids)
+
+#total is a bit weird in the raw. Redoing
+audit <- audit |>
+  mutate(audit_total = 
+           rowSums(across(c(audit_q1, audit_q2, audit_q3, audit_q4, audit_q5, audit_q6, audit_q7, audit_q8, audit_q9, audit_q10))))
+
+audit <- audit |>
+  rename(
+    participant_id = study_id
+  )
+```
+
+Adding in QFI
+```{r}
+qfiDat <- read_csv("QFI.csv")
+```
+
+Adding the variables I need to an aggregate dataset I will use for analysis
+```{r}
+#checking everything first
+unique(amount_consumed$`Session Type`)
+unique(Pain_Avg$condition)
+
+#joining the lab sessions first
+sessions <- Pain_Avg |>
+  full_join(amount_consumed |> rename(condition = `Session Type`),
+            by = c("participant_id", "condition"))
+
+#joining data collected at screening
+screening <- demographics |>
+  mutate(condition = "screening_session") |>
+  full_join(self_reports |> mutate(condition = "screening_session"),
+            by = c("participant_id", "condition"))
+
+#Creating the full dataset
+full_data <- bind_rows(screening, sessions) |>
+  left_join(myalgia_dat, by = "participant_id") |>
+  mutate(condition = factor(condition,
+                            levels = c("screening_session", "Hot_Alc", "Hot_Topo", "Warm_Alc", "Warm_Topo"))) |>
+  relocate(participant_id, group, condition) |>
+  arrange(participant_id, condition)
+
+#Coping the screening variables down
+screen_vars <- setdiff(names(screening), c("participant_id", "condition"))
+full_data <- full_data |>
+  group_by(participant_id) |>
+  fill(all_of(screen_vars), .direction = "downup") |>
+  ungroup()
+
+#Fixing the temperature stuff
+full_data <- full_data |>
+  mutate(session_temp = case_when(
+    str_detect(condition, "Hot") ~ heat_temp,
+    str_detect(condition, "Warm") ~ 32,
+    TRUE ~ NA_real_
+  )) |>
+  relocate(session_temp, .after = condition)
+
+#checking
+full_data |>
+  filter(participant_id == "TED004") |>
+  select(participant_id, condition, heat_temp, session_temp)
+
+#retroactively adding AUDIT
+full_data <- full_data |>
+  left_join(audit |>
+              select(participant_id, audit_total), by = "participant_id")
+  
+# creating score for EAA
+full_data <- full_data |>
+  mutate(eaa_mean = rowMeans(pick(drink_alc_ease_pain, eaa_2, eaa_3, eea_4, eaa_5)))
+
+#Addint QFI to full data
+full_data <- full_data |>
+  left_join(qfiDat |>
+              select(participant_id, QFI), by = "participant_id")
+
+write_csv(full_data, "full_data_long.csv")
+```
+
+Getting a dataset with only the screening data
+```{r}
+screeningDat <- full_data |> filter(condition == "screening_session")
+```
+
+Demographics Tables and things like that:
+```{r}
+demo_table <- screeningDat |>
+  select(group, age, sex_at_birth, gender, race, ethnic_cat, current_employed, years_of_education, audit_total, QFI, eaa_mean) |>
+  tbl_summary(
+    by = group,
+    type = list(years_of_education ~ "continuous"),
+    statistic = list(all_continuous() ~ "{mean} ({sd})",
+                     all_categorical() ~ "{n} ({p}%)"),
+    label = list(age ~ "Age (years)",
+                 sex_at_birth ~ "Sex at birth",
+                 gender ~ "Gender",
+                 race ~ "Race",
+                 ethnic_cat ~ "Ethnicity",
+                 current_employed ~ "Currently employed",
+                 years_of_education ~ "Years of Education",
+                 audit_total ~ "AUDIT Total",
+                 QFI ~ "QFI",
+                 eaa_mean ~ "Expectancy of Alcohol Analgesia"),
+    missing = "no"
+  ) |>
+  add_overall() |>
+  bold_labels()
+
+demo_table
+
+demo_table |> as_gt() |> gt::gtsave("demographics_table.png")
+```
+
+**Data analysis time**
+
+Aim 1: What do participants believe?
+```{r}
+#Sanity Checks
+range(screeningDat$grep_woman_you, na.rm = TRUE) #1 - 74
+cor(screeningDat$grep_man_v_woman, screeningDat$grep_woman_v_man,
+    use = "complete.obs") #-0.8819453
+
+#creating the bias scores
+full_data <- full_data |>
+  mutate(
+    stereotype = ((grep_woman_v_man - 50) + (50 - grep_man_v_woman)) /2,
+    self_vs_same = if_else(sex_at_birth == "female", grep_woman_you, grep_man_you) - 50,
+    self_vs_other = if_else(sex_at_birth == "female", grep_man_you, grep_woman_you) - 50
+  )
+
+screeningDat <- full_data |> filter(condition == "screening_session")
+
+#analysis time
+count(screeningDat, sex_at_birth, group)
+# female TMD = 9
+# female control = 11
+# male TMD = 5
+# male control = 5
+
+screeningDat |> 
+  group_by(sex_at_birth) |>
+  summarise(n = n(),
+            across(c(stereotype, self_vs_same, self_vs_other),
+                   list(mean = ~mean(.x, na.rm = TRUE, sd = ~sd(.x, na.rm = TRUE)))))
+
+#ttest: one sample ttests
+t.test(screeningDat$stereotype, mu = 0) #t = -1.3129, df = 28, p-value = 0.1999
+t.test(screeningDat$self_vs_same, mu = 0) #t = -1.9376, df = 29, p-value = 0.06246
+t.test(screeningDat$self_vs_other, mu = 0) #t = -0.5338, df = 29, p-value = 0.5975
+#Ttests two sample ttests (sex)
+t.test(stereotype ~ sex_at_birth, data = screeningDat) #t = -0.10074, df = 26.397, p-value = 0.9205
+t.test(self_vs_other ~ sex_at_birth, data = screeningDat) #t = -0.84062, df = 27.176, p-value = 0.4079
+t.test(self_vs_same ~ sex_at_birth, data = screeningDat) #t = -0.31125, df = 26.213, p-value = 0.7581
+```
+
+Aim 2: Do beliefs predict what happens in the lab?
+```{r}
+sess <- full_data |>
+  filter(condition != "screening_session") |>
+  mutate(temp = factor(temp, levels = c("Warm", "Hot")),
+         substance = factor(substance, levels = c("Topo", "Alc")),
+         group = factor(group))
+
+#Pain: does each belief predict in lab pain? (TMD and Control)
+pain_stereo <- lmer(pain_mean ~ temp * substance + group + stereotype + (1 | participant_id), data = sess)
+pain_self <- lmer(pain_mean ~ temp * substance + group + self_vs_same + (1 | participant_id), data = sess)
+pain_other <- lmer(pain_mean ~ temp * substance + group + self_vs_other + (1 | participant_id), data = sess)
+pain_expect <- lmer(pain_mean ~ temp * substance + group + drink_alc_ease_pain + (1 | participant_id), data = sess)
+
+summary(pain_stereo) 
+  #gender stereotypes about pain don't clearly predict pain ratings, but it seems that people who believe more strongly that women are more pain sensitive tended to rate their own pain slightly lower, but effect was small (p = 0.09)
+
+summary(pain_self)
+  #not significant, this one was about how people rated their own pain sensitivity compared to others of their same gender/sex
+
+summary(pain_other)
+ #not signiciant, this one was about how people rather their own pain sensitivity compared to the opposite gender/sex
+
+summary(pain_expect) 
+  # this is the first EAA question, looks like people who 
+
+#Pain: does each belief predict in pain lab when accounting for Sex?
+pain_stereo_sex <- lmer(pain_mean ~ temp * substance + group + sex_at_birth + stereotype + (1 | participant_id), data = sess)
+pain_self_sex <- lmer(pain_mean ~ temp * substance + group + sex_at_birth + self_vs_same + (1 | participant_id), data = sess)
+pain_expect_sex <- lmer(pain_mean ~ temp * substance + group + sex_at_birth + drink_alc_ease_pain + (1 | participant_id), data = sess)
+
+summary(pain_stereo_sex)
+summary(pain_self_sex)
+summary(pain_expect_sex)
+
+#Since alc expectancy analgesia had more significant results from the models. 
+class(sess$total_consumed_g) #numeric
+sess |> 
+  filter(!is.na(total_consumed_g),
+         is.na(suppressWarnings(as.numeric(total_consumed_g)))) |>
+  distinct(participant_id, condition, total_consumed_g)
+
+#full_data <- full_data |> mutate(total_consumed_g = as.numeric(na_if(total_consumed_g, "N/A"))) not really needed 
+#sess<- sess |> mutate(Quantity_Drunk = as.numeric(na_if(Quantity_Drunk, "N/A")))
+
+drink_expect2 <- lmer(total_consumed_g ~ temp * substance + group + sex_at_birth + eaa_mean + (1 | participant_id), data = sess)
+summary(drink_expect2)
+
+#For fun, hot vs warm and beverage type consumed
+emmeans(drink_expect2, pairwise ~ temp | substance)
+```
+
+Analysis & Plotting: Pain and EAA
+```{r}
+pain_expect2 <- lmer(pain_mean ~ temp * substance + group + sex_at_birth + eaa_mean + (1 | participant_id), data = sess)
+summary(pain_expect2)
+```
+
+Plotting: Expectancy vs drinking consumed all the things...
+```{r}
+person_drink_m <- lmer(total_consumed_g ~ eaa_mean * substance * group + sex_at_birth + temp + (1 | participant_id), data = sess)
+summary(person_drink_m)
+
+#looking at the model with sex as *
+person_drink_sex_m <- lmer(total_consumed_g ~ eaa_mean * sex_at_birth + temp * substance + group + (1 | participant_id), data = sess)
+summary(person_drink_sex_m)
+emtrends(person_drink_sex_m, ~ sex_at_birth, var = "eaa_mean") |> test()
+#sex at birth, males drank much more
+#alc session also was super significant in this model
+
+#Checking robustness among the male sample
+men_ids <- sess |> filter(sex_at_birth == "male") |> distinct(participant_id) |> pull()
+
+loo <- map_dfr(men_ids, ~ {
+  m <- lmer(total_consumed_g ~ eaa_mean * sex_at_birth + temp * substance + group + (1 | participant_id),
+            data = sess |> filter(participant_id != .x))
+  tidy(m, effects = "fixed") |>
+    filter(term == "eaa_mean:sex_at_birthmale") |>
+    mutate(dropped = .x)
+})
+
+loo |> select(dropped, estimate, p.value)
+
+
+#Plotting
+person_drink <- sess |>
+  group_by(participant_id, sex_at_birth, group) |>
+  summarise(mean_drunk = mean(total_consumed_g, na.rm = TRUE),
+            expectancy = first(eaa_mean),
+            .groups = "drop")
+
+p_expect <- ggplot(person_drink, aes(x = expectancy, y = mean_drunk)) +
+  geom_point(aes(color = sex_at_birth),
+             size = 3, alpha = 0.8)+
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(x = "Alcohol analgesia expectancy (0-100)",
+       y = "Mean beverage consumed (g)",
+       color = "Sex") +
+  theme_classic(base_size = 14)
+
+p_expect
+
+#Other plot based off how men have this weird lil trend
+expect_sex_dat <- sess |>
+  group_by(participant_id, sex_at_birth, eaa_mean) |>
+  summarise(mean_g = mean(total_consumed_g, na.rm = TRUE), .groups = "drop")
+
+p_expect_sex_lines <- ggplot(expect_sex_dat, aes(x = eaa_mean, y = mean_g, color = sex_at_birth)) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  geom_smooth(method = "lm", se = TRUE) +
+  scale_color_discrete(labels = c(female = "Women (n = 20)", male = "Men (n = 10)")) +
+  labs(x = "Alcohol analgesia expectancy (EAA, 0–100)",
+       y = "Mean beverage consumed per session (g)",
+       color = NULL) +
+  theme_classic(base_size = 14)
+
+p_expect_sex_lines
+
+ggsave("expect_by_sex.png", p_expect_sex_lines, width = 7, height = 4.5, dpi = 300)
+
+#Do high-EAA people drink more alc specifically when in pain?
+drink_eaa_3way <- lmer(total_consumed_g ~ eaa_mean * temp * substance + sex_at_birth + group + (1 | participant_id), data = sess)
+summary(drink_eaa_3way)
+
+emtrends(drink_eaa_3way, ~ temp * substance, var = "eaa_mean") |> test()
+#Results: expectancy predicts drinking in every session except the neutral session. 
+
+#Plotting the above results: 
+p_expect_4panel <- ggplot(sess |> filter(!is.na(total_consumed_g)),
+                          aes(x = eaa_mean,
+                              y = total_consumed_g))+
+  geom_point(alpha = 0.7,
+             size = 2)+
+  geom_smooth(method = "lm", 
+              se = TRUE,
+              color = "black")+
+  facet_grid(substance ~ temp,
+             labeller = labeller(substance = c(Topo = "Non-alcoholic",
+                                               Alc = "Alcohol")))+
+  labs(x = "Alcohol analgesia expectancy (EAA, 0-100",
+       y = "Beverage consumed (g)")+
+  theme_classic(base_size = 14)
+
+p_expect_4panel
+
+#Do high-EAA people feel less pain when consuming alc?
+pain_eaa_3way <- lmer(pain_mean ~ eaa_mean * temp * substance + sex_at_birth + group + (1 | participant_id), data = sess)
+summary(pain_eaa_3way)
+emtrends(pain_eaa_3way, ~ temp * substance, var = "eaa_mean") |> test()
+
+p_eaa_pain_hot <- ggplot(sess |> filter(temp == "Hot", !is.na(pain_mean)),
+                         aes(x = eaa_mean, y = pain_mean, color = substance))+
+  geom_point(size = 2.5,
+             alpha = 0.8)+
+  geom_smooth(method = "lm",
+              se = TRUE)+
+  scale_color_discrete(labels = c(Topo = "Non-alcoholic",
+                                  Alc = "Alcohol"))+
+  labs(x = "Alcohol analgesia expectancy (EAA 0-100)",
+       y = "Mean pain rating during painful heat (0-100)",
+       color = "Beverage")+
+  theme_classic(base_size = 14)
+
+p_eaa_pain_hot
+
+#Looking for sex differences with pain * eaa
+pain_eaa_sex <- lmer(pain_mean ~ eaa_mean * temp + eaa_mean * sex_at_birth + substance + group + (1 | participant_id), data = sess)
+summary(pain_eaa_sex)
+emtrends(pain_eaa_sex, ~ sex_at_birth | temp, var = "eaa_mean") |> test()
+
+#Do high EAA people drink more in general?
+drink_eaa_audit <- lmer(total_consumed_g ~ eaa_mean * temp * substance + sex_at_birth + group + audit_total +(1 | participant_id), data = sess)
+summary(drink_eaa_audit)
+emtrends(drink_eaa_audit, ~ temp * substance, var = "eaa_mean") |> test()
+
+#Jeff: slide 15 -- can you re-run w/ EAA X Sex X Beverage instead of controlling for beverage?
+drink_eaa_sex_bev <- lmer(total_consumed_g ~ eaa_mean * sex_at_birth * substance + temp + group + (1 | participant_id), data = sess)
+summary(drink_eaa_sex_bev)
+
+emtrends(drink_eaa_sex_bev, ~ sex_at_birth | substance, var = "eaa_mean") |> test()
+
+#Jeff: also rerun previous model but with temp
+drink_eaa_4way <- lmer(total_consumed_g ~ eaa_mean * sex_at_birth * substance * temp + group + (1 | participant_id), data = sess)
+summary(drink_eaa_4way)
+
+#EAA slope for each sex in each of the 4 sessions
+emtrends(drink_eaa_4way, ~ sex_at_birth | temp * substance, var = "eaa_mean") |> test()
+
+#does the men-vs-women slope difference change across sessions?
+emtrends(drink_eaa_4way, pairwise ~ sex_at_birth | temp * substance, var = "eaa_mean")
+```
+
+Plotting: Drinking by condition
+```{r}
+cond_means <- sess |>
+  group_by(temp, substance) |>
+  summarise(mean = mean(total_consumed_g, na.rm = TRUE),
+            se = sd(total_consumed_g, na.rm = TRUE) / sqrt(sum(!is.na(total_consumed_g))),
+            .groups = "drop")
+
+p_cond <- ggplot(cond_means, aes(x = temp, y = mean, color = substance, group = substance)) +
+  geom_point(size = 3, position = position_dodge(width = 0.2)) +
+  geom_line(position = position_dodge(width = 0.2)) +
+  geom_errorbar(aes(ymin = mean - se, ymax = mean + se), width = 0.1,
+                position = position_dodge(width = 0.2)) +
+  labs(x = "Temperature", y = "Mean beverage consumed (g)", color = "Beverage") +
+  theme_classic(base_size = 14)
+
+p_cond
+
+emmeans(drink_sex, pairwise ~ sex_at_birth | temp * substance)
+```
+
+Plotting: Drinking by condition separated by sex
+```{r}
+drink_sex <- lmer(total_consumed_g ~ temp * substance * sex_at_birth + group + eaa_mean + (1 | participant_id), data = sess)
+summary(drink_sex)
+
+sex_means <- sess |>
+  group_by(sex_at_birth, temp, substance) |>
+  summarise(n = sum(!is.na(total_consumed_g)),
+            mean = mean(total_consumed_g, na.rm = TRUE),
+            se = sd(total_consumed_g, na.rm = TRUE) / sqrt(n),
+            .groups = "drop")
+
+p_sex <- ggplot(sex_means, aes(x = temp, y = mean, color = substance, group = substance))+
+  geom_point(size = 3, position = position_dodge(0.2))+
+  geom_line(position = position_dodge(0.2))+
+  geom_errorbar(aes(ymin = mean - se,
+                    ymax = mean + se),
+                width = 0.1,
+                position = position_dodge(0.2))+
+  facet_wrap(~ sex_at_birth, labeller = labeller(sex_at_birth = c(female = "Women (n = 20)", male = "Men (n = 10)")))+
+  labs(x = "Temperature", y = "Mean beverage consumed (g)", color = "Beverage")+
+  theme_classic(base_size = 14)
+
+p_sex
+```
+
+Plotting: Drinking by session condition separated by sex and TMD/Control
+```{r}
+group_sex_means <- sess |>
+  group_by(group, sex_at_birth, temp, substance) |>
+  summarise(n = sum(!is.na(total_consumed_g)),
+            mean = mean(total_consumed_g, na.rm = TRUE),
+            sd = sd(total_consumed_g, na.rm = TRUE),
+            se = sd / sqrt(n),
+            .groups = "drop") |>
+  arrange(group, sex_at_birth, substance, temp)
+
+panel_labels <- c(control = "Control", TMD = "TMD", female = "Women", male = "Men")
+
+p_group_sex <- ggplot(group_sex_means, aes(x = temp, y = mean, color = substance, group = substance))+
+  geom_point(size = 3, position = position_dodge(0.2))+
+  geom_line(position = position_dodge(0.2))+
+  geom_errorbar(aes(ymin = mean - se, ymax = mean + se), width = 0.1,
+                    position = position_dodge(0.2))+
+  geom_text(aes(label = paste0("n=", n)), vjust = -1.2, size = 3,
+            position = position_dodge(0.2), show.legend = FALSE)+
+  facet_grid(sex_at_birth ~ group, labeller = as_labeller(panel_labels))+
+  labs(x = "Temperature", y = "Mean beverage consumed (g)", color = "Beverage")+
+  theme_classic(base_size = 14)
+                  
+                
+p_group_sex
+
+#The stats for the table above
+drink_group_sex <- lmer(total_consumed_g ~ temp * substance * group + sex_at_birth + eaa_mean + (1 | participant_id), data = sess)
+summary(drink_group_sex)
+
+emmeans(drink_group_sex, pairwise ~ temp | group * substance)
+
+drink_4way <- lmer(total_consumed_g ~ temp * substance * group * sex_at_birth + eaa_mean + (1 | participant_id), data = sess)
+summary(drink_4way)
+
+emmeans(drink_4way, pairwise ~ temp | substance * group * sex_at_birth)
+```
+
+Plotting: Expectancy vs pain during hot sessions
+```{r}
+person_pain <- sess |>
+  filter(temp == "Hot") |>
+  group_by(participant_id, sex_at_birth, group) |>
+  summarise(mean_pain  = mean(pain_mean, na.rm = TRUE),
+            expectancy = first(eaa_mean),
+            .groups = "drop")
+
+p_expect_pain <- ggplot(person_pain, aes(x = expectancy, y = mean_pain)) +
+  geom_point(aes(color = group), size = 3, alpha = 0.8) +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(x = "\"Drinking alcohol would ease my pain\" (0–100)",
+       y = "Mean pain intensity, hot sessions (0–100)",
+       color = "Group") +
+  theme_classic(base_size = 14)
+
+p_expect_pain
+```
+
+Running Jeff's interaction (just without sex differences) - Total consumed, TMD vs Control, Alc Expectancy
+```{r}
+drink_group <- lmer(total_consumed_g ~ temp * substance * group + eaa_mean + (1 | participant_id), data = sess)
+summary(drink_group)
+
+emmeans(drink_group, pairwise ~ temp | group * substance)
+
+#graphing the above
+group_dat <- sess |>
+  filter(!is.na(total_consumed_g)) |>
+  group_by(group, temp, substance) |>
+  summarise(mean_g = mean(total_consumed_g),
+            se = sd(total_consumed_g) / sqrt(n()),
+            n = n(),
+            .groups = "drop")
+
+p_group <- ggplot(group_dat, aes(x = temp, y = mean_g, color = substance, group = substance))+
+  geom_line(linewidth = 1, position = position_dodge(0.2))+
+  geom_point(size = 3, position = position_dodge(0.2))+
+  geom_errorbar(aes(ymin = mean_g - se, ymax = mean_g + se),
+                width = 0.1, position = position_dodge(0.2))+
+  facet_wrap(~ group, labeller = as_labeller(c(control = "Control", TMD = "TMD")))+
+  labs(x = "Session Type",
+       y = "Mean Beverage Consumed (g)",
+       color = "Beverage")+
+  theme_classic(base_size = 14)
+
+p_group
+ggsave("drink by group.png", p_group, width = 8, height = 4.5, dpo = 300)
+```
+
+Plotting: Comparing themselves to same sex
+```{r}
+
+grep_long <- screeningDat |>
+  select(participant_id, sex_at_birth, stereotype, self_vs_same, self_vs_other) |>
+  pivot_longer(c(stereotype, self_vs_same, self_vs_other),
+               names_to = "measure", values_to = "score") |>
+  mutate(measure = factor(measure,
+                          levels = c("stereotype", "self_vs_same", "self_vs_other"),
+                          labels = c("Stereotype\n(women vs men)",
+                                     "Self vs\nsame sex",
+                                     "Self vs\nopposite sex")))
+
+p_grep <- ggplot(grep_long, aes(x = measure, y = score)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_jitter(aes(color = sex_at_birth), width = 0.15, size = 2.5, alpha = 0.7, na.rm = TRUE) +
+  stat_summary(fun.data = mean_cl_normal, geom = "pointrange", size = 0.8, na.rm = TRUE) +
+  labs(x = NULL,
+       y = "Bias score (0 = no difference)",
+       color = "Sex at birth") +
+  theme_classic(base_size = 14)
+
+p_grep
+
+#Same Graph, but separating males and females
+p_grep_sex <- ggplot(grep_long, aes(x = measure, y = score, color = sex_at_birth)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_point(position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.6),
+             size = 2.2, alpha = 0.5, na.rm = TRUE) +
+  stat_summary(fun.data = mean_cl_normal, geom = "pointrange",
+               position = position_dodge(width = 0.6),
+               size = 0.9, linewidth = 1, na.rm = TRUE) +
+  labs(x = NULL,
+       y = "Bias score (0 = no difference)",
+       color = "Sex at birth") +
+  theme_classic(base_size = 14)
+
+p_grep_sex
+```
+
+Looking at the pain sensitivity grep questions and seeing if people have gender pain sensitivity beliefs that correlate with any in lab drinking and pain intensitivity behaviors
+```{r}
+grep_vars <- c("stereotype", "self_vs_same", "self_vs_other")
+outcomes <- c("pain_mean", "total_consumed_g")
+
+grep_painsensitivity_results <- expand_grid(outcome = outcomes, predictor = grep_vars) |>
+  mutate(
+    model = map2(outcome, predictor, ~lmer(as.formula(paste(.x, "~ temp * substance + group + sex_at_birth +", .y, "+ (1 | participant_id)")), data = sess)),
+    est = map2(model, predictor, ~ tidy(.x, effects = "fixed") |> filter(term == .y)),
+    n = map_int(model, ~ ngrps(.x)[["participant_id"]])) |>
+      select(outcome, predictor, n, est) |>
+      unnest(est) |>
+      select(outcome, predictor, n, estimate, std.error, p.value)
+
+grep_painsensitivity_results
+# A tibble: 6 × 6
+  #outcome          predictor         n estimate std.error p.value
+#  <chr>            <chr>         <int>    <dbl>     <dbl>   <dbl>
+#1 pain_mean        stereotype       29  -0.143     0.0822  0.0943
+#2 pain_mean        self_vs_same     30  -0.0663    0.101   0.518 
+#3 pain_mean        self_vs_other    30  -0.0578    0.0725  0.433 
+#4 total_consumed_g stereotype       29  -1.34      2.11    0.530 
+#5 total_consumed_g self_vs_same     30  -4.13      2.35    0.0903
+#6 total_consumed_g self_vs_other    30  -0.769     1.78    0.670 
+```
+
+Analysis on the GREP: Willingness to report pain 
+Results: independent and between subjects t-tests shows that there is no gender bias for "willingness to report pain", further analysis indicated that any bias or lack there of does not correlate with any in lab drinking behaviors or pain intensities. 
+```{r}
+#Adding in GREP questions on "Willingness to report pain"
+
+#will_man_you = Compared to the typical man, your willingness to report pain is...
+#will_woman_you = Compared to the typical woman, your willingness to report pain is...
+#will_woman_v_man = Compared to the typical woman, the typical man's willingness to report pain is...
+#will_man_v_woman = Compared to the typical man, the typical woman's willingness to report pain is... 
+full_data <- full_data |>
+  mutate(
+    will_stereotype = ((will_woman_v_man - 50) + (50 - will_man_v_woman)) /2,
+    will_self_vs_same = if_else(sex_at_birth == "female", will_woman_you, will_man_you) - 50,
+    will_self_vs_other = if_else(sex_at_birth == "female", will_man_you, will_woman_you) - 50
+  )
+
+screeningDat <- full_data |> filter(condition == "screening_session")
+
+screeningDat |> 
+  group_by(sex_at_birth) |>
+  summarise(n = n(),
+            across(c(will_stereotype, will_self_vs_same, will_self_vs_other),
+                   list(mean = ~mean(.x, na.rm = TRUE, sd = ~sd(.x, na.rm = TRUE)))))
+
+sess <- sess |>
+  left_join(screeningDat |>
+              select(participant_id, will_stereotype, will_self_vs_same, will_self_vs_other), by = "participant_id")
+
+#ttest: one sample ttests
+t.test(screeningDat$will_stereotype, mu = 0) # t = -0.52565, df = 28, p-value = 0.6033
+t.test(screeningDat$will_self_vs_same, mu = 0) # t = 0.26337, df = 29, p-value = 0.7941
+t.test(screeningDat$will_self_vs_other, mu = 0) # t = -0.48736, df = 29, p-value = 0.6297
+#Ttests two sample ttests (sex)
+t.test(will_stereotype ~ sex_at_birth, data = screeningDat) # t = 0.88792, df = 24.848, p-value = 0.3831
+t.test(will_self_vs_other ~ sex_at_birth, data = screeningDat) # t = -0.28123, df = 18.604, p-value = 0.7816
+t.test(will_self_vs_same ~ sex_at_birth, data = screeningDat) # t = -1.0592, df = 17.277, p-value = 0.3041
+
+#finally, looking at if any of these willingness to report pain questions. If belief impacts lab. Likely not but I will do my due diligence
+willingness_vars <- c("will_stereotype", "will_self_vs_same", "will_self_vs_other")
+outcomes <- c("pain_mean", "total_consumed_g")
+
+willingness_painsensitivity_results <- expand_grid(outcome = outcomes, predictor = willingness_vars) |>
+  mutate(
+    model = map2(outcome, predictor, ~lmer(as.formula(paste(.x, "~ temp * substance + group + sex_at_birth +", .y, "+ (1 | participant_id)")), data = sess)),
+    est = map2(model, predictor, ~ tidy(.x, effects = "fixed") |> filter(term == .y)),
+    n = map_int(model, ~ ngrps(.x)[["participant_id"]])) |>
+      select(outcome, predictor, n, est) |>
+      unnest(est) |>
+      select(outcome, predictor, n, estimate, std.error, p.value)
+
+willingness_painsensitivity_results
+#  outcome          predictor              n estimate std.error p.value
+#  <chr>            <chr>              <int>    <dbl>     <dbl>   <dbl>
+#1 pain_mean        will_stereotype       29  0.111      0.0866   0.211
+#2 pain_mean        will_self_vs_same     30  0.0733     0.0861   0.402
+#3 pain_mean        will_self_vs_other    30 -0.00908    0.0738   0.903
+#4 total_consumed_g will_stereotype       29 -0.835      2.18     0.705
+#5 total_consumed_g will_self_vs_same     30 -0.402      2.13     0.852
+#6 total_consumed_g will_self_vs_other    30 -0.776      1.79     0.669
+```
+

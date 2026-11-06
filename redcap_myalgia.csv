@@ -1,0 +1,60 @@
+study_id,redcap_event_name,redcap_repeat_instrument,redcap_repeat_instance,redcap_survey_identifier,dctmdaxis_1_examination_form_timestamp,f2_subjid,f2_date,f2_myalgia_calc
+TED001,ted_screening_sess_arm_1,,,,,TED001,5/27/25 14:42,1
+TED004,ted_screening_sess_arm_1,,,,,TED004,5/20/25 12:39,0
+TED006,ted_screening_sess_arm_1,,,,7/10/25 14:42,TED006,7/10/25 14:16,1
+TED007,ted_screening_sess_arm_1,,,,6/4/25 08:39,TED007,6/4/25 08:11,1
+TED010,ted_screening_sess_arm_1,,,,8/7/25 08:28,TED010,8/7/25 08:14,0
+TED011,ted_screening_sess_arm_1,,,,6/11/25 14:11,TED011,6/11/25 13:55,0
+TED013,ted_screening_sess_arm_1,,,,6/13/25 15:08,TED013,6/13/25 14:26,1
+TED015,ted_screening_sess_arm_1,,,,8/1/25 08:42,TED015,8/1/25 08:17,1
+TED017,ted_screening_sess_arm_1,,,,9/10/25 10:41,TED017,9/10/25 10:13,1
+TED018,ted_screening_sess_arm_1,,,,7/9/25 14:39,TED018,7/9/25 14:14,1
+TED019,ted_screening_sess_arm_1,,,,7/31/25 08:39,TED019,7/31/25 08:14,1
+TED027,ted_screening_sess_arm_1,,,,,,,0
+TED029,ted_screening_sess_arm_1,,,,8/7/25 14:33,TED029,8/7/25 14:02,1
+TED033,ted_screening_sess_arm_1,,,,10/23/25 08:54,TED033,10/23/25 08:25,0
+TED038,ted_screening_sess_arm_1,,,,10/16/25 09:18,TED038,10/16/25 08:56,0
+TED044,ted_screening_sess_arm_1,,,,10/21/25 14:58,TED044,10/21/25 14:42,0
+TED052,ted_screening_sess_arm_1,,,,12/2/25 15:17,TED052,12/2/25 14:46,1
+TED055,ted_screening_sess_arm_1,,,,1/7/26 15:20,TED055,1/7/26 14:46,1
+TED056,ted_screening_sess_arm_1,,,,1/5/26 15:26,TED056,1/5/26 15:08,0
+TED057,ted_screening_sess_arm_1,,,,1/12/26 15:26,TED057,1/12/26 15:10,0
+TED059,ted_screening_sess_arm_1,,,,5/18/26 15:20,TED059,5/18/26 14:57,1
+TED060,ted_screening_sess_arm_1,,,,3/18/26 09:05,TED060,3/18/26 08:47,0
+TED064,ted_screening_sess_arm_1,,,,3/11/26 09:17,TED064,3/11/26 08:55,1
+TED067,ted_screening_sess_arm_1,,,,6/16/26 09:12,TED067,6/16/26 08:43,1
+TED069,ted_screening_sess_arm_1,,,,,,,0
+TED077,ted_screening_sess_arm_1,,,,3/18/26 12:10,TED077,3/18/26 11:53,0
+TED080,ted_screening_sess_arm_1,,,,5/19/26 14:55,TED080,5/19/26 14:30,1
+TED084,ted_screening_sess_arm_1,,,,3/23/26 15:46,TED084,3/23/26 15:30,0
+TED085,ted_screening_sess_arm_1,,,,3/25/26 12:31,TED085,3/25/26 12:03,1
+TED086,ted_screening_sess_arm_1,,,,7/14/26 09:47,Ted086,7/14/26 09:15,1
+TED087,ted_screening_sess_arm_1,,,,4/6/26 09:46,TED087,4/6/26 09:18,1
+TED088,ted_screening_sess_arm_1,,,,4/22/26 14:56,TED088,4/22/26 14:40,0
+TED091,ted_screening_sess_arm_1,,,,4/29/26 15:04,TED091,4/29/26 14:34,1
+TED093,ted_screening_sess_arm_1,,,,4/27/26 15:28,TED093,4/27/26 15:11,0
+TED095,ted_screening_sess_arm_1,,,,4/13/26 15:20,TED095,4/13/26 15:02,0
+TED106,ted_screening_sess_arm_1,,,,5/11/26 15:39,TED106,5/11/26 15:19,0
+TED119,ted_screening_sess_arm_1,,,,4/8/26 14:58,TED119,4/8/26 14:41,0
+TED127,ted_screening_sess_arm_1,,,,7/8/26 15:02,TED127,7/8/26 14:43,1
+TED128,ted_screening_sess_arm_1,,,,6/30/26 12:03,TED128,6/30/26 11:43,0
+TED129,ted_screening_sess_arm_1,,,,5/26/26 08:53,TED129,5/26/26 08:37,0
+TED130,ted_screening_sess_arm_1,,,,6/30/26 14:48,TED130,6/30/26 14:32,0
+TED131,ted_screening_sess_arm_1,,,,7/13/26 08:26,TED131,7/13/26 08:12,0
+TED132,ted_screening_sess_arm_1,,,,6/9/26 08:55,TED132,6/9/26 08:41,0
+TED133,ted_screening_sess_arm_1,,,,5/27/26 08:54,TED133,5/27/26 08:37,0
+TED140,ted_screening_sess_arm_1,,,,6/17/26 10:28,TED140,6/17/26 10:13,0
+TED144,ted_screening_sess_arm_1,,,,6/1/26 16:11,TED144,6/1/26 15:46,1
+TED148,ted_screening_sess_arm_1,,,,7/27/26 15:23,TED148,7/27/26 15:05,0
+TED154,ted_screening_sess_arm_1,,,,10/6/26 11:57,TED154,10/6/26 11:39,1
+TED167,ted_screening_sess_arm_1,,,,9/8/26 09:36,TED167,9/8/26 09:19,1
+TED168,ted_screening_sess_arm_1,,,,9/8/26 14:59,TED168,9/8/26 14:42,0
+TED169,ted_screening_sess_arm_1,,,,8/26/26 15:08,TED169,8/26/26 14:44,0
+TED181,ted_screening_sess_arm_1,,,,8/24/26 15:46,TED181,8/24/26 15:15,1
+TED184,ted_screening_sess_arm_1,,,,9/1/26 09:36,TED184,9/1/26 09:12,1
+TED199,ted_screening_sess_arm_1,,,,9/23/26 13:08,TED199,9/23/26 12:41,1
+TED205,ted_screening_sess_arm_1,,,,9/15/26 15:11,TED205,9/15/26 14:43,1
+TED210,ted_screening_sess_arm_1,,,,9/2/26 15:18,TED210,9/2/26 14:55,1
+TED215,ted_screening_sess_arm_1,,,,9/1/26 12:10,TED215,9/1/26 11:47,1
+TED224,ted_screening_sess_arm_1,,,,9/16/26 11:59,TED224,9/16/26 11:44,0
+TED236,ted_screening_sess_arm_1,,,,10/7/26 11:52,TED236,10/7/26 11:35,0
