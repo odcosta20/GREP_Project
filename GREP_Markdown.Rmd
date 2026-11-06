@@ -1002,6 +1002,36 @@ emtrends(drink_eaa_4way, ~ sex_at_birth | temp * substance, var = "eaa_mean") |>
 
 #does the men-vs-women slope difference change across sessions?
 emtrends(drink_eaa_4way, pairwise ~ sex_at_birth | temp * substance, var = "eaa_mean")
+
+#plotting the above
+slopes_4way <- emtrends(drink_eaa_4way, ~ sex_at_birth | temp * substance, var = "eaa_mean") |>
+  as.data.frame() |>
+  mutate(session = factor(paste(temp, substance),
+                          levels = c("Warm Topo",
+                                     "Hot Topo",
+                                     "Warm Alc",
+                                     "Hot Alc"),
+                          labels = c("Warm\nNon-alc",
+                                     "Hot\nAlcohol",
+                                     "Warm\nAlcohol",
+                                     "Hot\nNon-alc")))
+
+p_slopes <- ggplot(slopes_4way, aes(x = session,
+                                    y = eaa_mean.trend,
+                                    color = sex_at_birth))+
+  geom_hline(yintercept = 0,
+             linetype = "dashed", 
+             color = "grey50")+
+  geom_pointrange(aes(ymin = lower.CL,
+                      ymax = upper.CL),
+                  position = position_dodge(width = 0.4), size = 0.7)+
+  scale_color_discrete(labels = c(female = "Women (n = 20)", male = "Men (n = 10)"))+
+  labs(x = NULL,
+       y = "EAA slope (g consumed per EAA point)",
+       color = NULL)+
+  theme_classic(base_size = 14)
+
+p_slopes
 ```
 
 Plotting: Drinking by condition
